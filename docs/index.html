@@ -128,7 +128,7 @@
 
 <div class="info-bar">
   <span>USD/JPY: <span class="rate" id="usdjpyDisplay">―</span>&nbsp; 5分毎自動更新</span>
-  <span>※ 金・BTC: Binance API / ACWI・S&P500・TOPIX: Yahoo Finance (CORSプロキシ経由) / 為替: open.er-api.com</span>
+  <span>※ 金・ACWI・S&P500・TOPIX: Yahoo Finance / BTC: Binance / 為替: open.er-api.com</span>
 </div>
 
 <main>
@@ -137,16 +137,12 @@
 
 <script>
 // ─── Config ───────────────────────────────────────────────────────────────────
-// Yahoo Finance を直接呼ぶと GitHub Pages からは CORS ブロックされるため
-// corsproxy.io 経由でアクセスする。金・BTC は Binance API（CORS フリー）を使用。
-const CORS_PROXY = 'https://corsproxy.io/?url=';
-
 const ASSETS = [
-  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'binance', bsym: 'XAUUSDT', base: 'USD' },
-  { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'yahoo',   ysym: 'ACWI',    base: 'USD' },
-  { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'yahoo',   ysym: '^GSPC',   base: 'USD' },
-  { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance', bsym: 'BTCUSDT', base: 'USD' },
-  { id: 'topix',       name: 'TOPIX (1306.T ETF)',                  color: '#10b981', src: 'yahoo',   ysym: '1306.T',  base: 'JPY' },
+  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'yahoo',   symbol: 'GC=F',    base: 'USD' },
+  { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'yahoo',   symbol: 'ACWI',    base: 'USD' },
+  { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'yahoo',   symbol: '%5EGSPC', base: 'USD' },
+  { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance', symbol: 'BTCUSDT', base: 'USD' },
+  { id: 'topix',       name: 'TOPIX (1306.T ETF)',                  color: '#10b981', src: 'yahoo',   symbol: '1306.T',  base: 'JPY' },
 ];
 
 // Yahoo Finance period → [range, interval]
@@ -221,7 +217,6 @@ function calcChanges(timestamps, prices) {
 
 // ─── Data fetchers ────────────────────────────────────────────────────────────
 async function fetchUSDJPY() {
-  // open.er-api.com は CORS フリーの無料為替レート API
   try {
     const r = await fetch('https://open.er-api.com/v6/latest/USD');
     const d = await r.json();
@@ -230,18 +225,17 @@ async function fetchUSDJPY() {
   } catch {}
 }
 
-async function fetchYahoo(ysym, per, start, end) {
-  // corsproxy.io 経由で Yahoo Finance にアクセスして CORS 制限を回避
-  let yahooUrl;
+async function fetchYahoo(symbol, per, start, end) {
+  let url;
   if (per === 'custom' && start && end) {
     const p1 = Math.floor(new Date(start).getTime() / 1000);
     const p2 = Math.floor(new Date(end).getTime() / 1000) + 86400;
-    yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ysym)}?period1=${p1}&period2=${p2}&interval=1d`;
+    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${p1}&period2=${p2}&interval=1d`;
   } else {
     const [range, interval] = YF_PERIODS[per] || ['1mo', '1d'];
-    yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ysym)}?range=${range}&interval=${interval}`;
+    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`;
   }
-  const r = await fetch(CORS_PROXY + encodeURIComponent(yahooUrl));
+  const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   const result = d?.chart?.result?.[0];
@@ -251,21 +245,21 @@ async function fetchYahoo(ysym, per, start, end) {
   return [ts, closes.map(v => v != null ? round(v, 4) : null)];
 }
 
-async function fetchBinance(bsym, per, start, end) {
+async function fetchBinance(symbol, per, start, end) {
   let params;
   if (per === 'custom' && start && end) {
     const st = new Date(start).getTime();
     const et = new Date(end).getTime() + 86400_000;
-    params = `symbol=${bsym}&interval=1d&startTime=${st}&endTime=${et}&limit=1000`;
+    params = `symbol=${symbol}&interval=1d&startTime=${st}&endTime=${et}&limit=1000`;
   } else {
     const [interval, limit] = BN_PERIODS[per] || ['1d', 31];
-    params = `symbol=${bsym}&interval=${interval}&limit=${limit}`;
+    params = `symbol=${symbol}&interval=${interval}&limit=${limit}`;
   }
   const r = await fetch(`https://api.binance.com/api/v3/klines?${params}`);
   if (!r.ok) throw new Error(`Binance ${r.status}`);
   const data = await r.json();
   const ts     = data.map(k => k[0]);
-  const prices = data.map(k => parseFloat(k[4])); // close price in USDT
+  const prices = data.map(k => parseFloat(k[4]));
   return [ts, prices];
 }
 
@@ -279,9 +273,9 @@ async function loadAsset(asset) {
     let ts, prices;
 
     if (asset.src === 'yahoo') {
-      [ts, prices] = await fetchYahoo(asset.ysym, period, customStart, customEnd);
+      [ts, prices] = await fetchYahoo(asset.symbol, period, customStart, customEnd);
     } else {
-      [ts, prices] = await fetchBinance(asset.bsym, period, customStart, customEnd);
+      [ts, prices] = await fetchBinance(asset.symbol, period, customStart, customEnd);
     }
 
     // Filter out null prices
