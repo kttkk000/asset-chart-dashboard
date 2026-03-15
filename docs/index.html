@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>資産チャート ダッシュボード</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3e;
+    --text: #e2e8f0; --muted: #8892a4; --accent: #6366f1;
+    --green: #10b981; --red: #ef4444; --yellow: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; gap: 10px; position: sticky; top: 0; z-index: 100;
+  }
+  header h1 { font-size: 1.1rem; font-weight: 700; white-space: nowrap; }
+  header h1 span { color: var(--accent); }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  .toggle-group { display: flex; background: var(--bg); border-radius: 8px; padding: 3px; border: 1px solid var(--border); }
+  .toggle-group button {
+    padding: 5px 14px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 0.85rem; font-weight: 600; background: transparent; color: var(--muted); transition: all 0.15s;
+  }
+  .toggle-group button.active { background: var(--accent); color: #fff; }
+
+  .period-bar { display: flex; gap: 3px; flex-wrap: wrap; }
+  .period-bar button {
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer; font-size: 0.78rem; transition: all 0.15s;
+  }
+  .period-bar button.active { border-color: var(--accent); color: var(--accent); background: rgba(99,102,241,0.12); }
+  .period-bar button:hover:not(.active) { border-color: var(--muted); color: var(--text); }
+
+  .custom-range { display: none; align-items: center; gap: 6px; }
+  .custom-range.visible { display: flex; flex-wrap: wrap; }
+  .custom-range input[type="date"] {
+    padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--card); color: var(--text); font-size: 0.78rem;
+  }
+  .custom-range button {
+    padding: 5px 12px; border: none; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-size: 0.78rem;
+  }
+
+  .info-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 24px; font-size: 0.72rem; color: var(--muted); border-bottom: 1px solid var(--border);
+    background: var(--card); flex-wrap: wrap; gap: 4px;
+  }
+  .info-bar .rate { color: var(--yellow); font-weight: 600; }
+
+  main { padding: 18px 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 18px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; position: relative; overflow: hidden;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+  .card-title { font-size: 0.82rem; font-weight: 600; color: var(--muted); }
+  .card-price { font-size: 1.55rem; font-weight: 700; color: var(--text); margin: 3px 0; line-height: 1.2; }
+  .card-price .unit { font-size: 0.85rem; color: var(--muted); margin-left: 3px; }
+
+  .changes { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .change-item { text-align: center; min-width: 56px; }
+  .change-label { font-size: 0.68rem; color: var(--muted); margin-bottom: 2px; }
+  .change-val { font-size: 0.82rem; font-weight: 700; }
+  .change-val.pos { color: var(--green); }
+  .change-val.neg { color: var(--red); }
+  .change-val.neu { color: var(--muted); }
+
+  .chart-wrap { height: 220px; position: relative; }
+
+  .loading-overlay {
+    position: absolute; inset: 0; background: rgba(26,29,39,0.85);
+    display: flex; align-items: center; justify-content: center; border-radius: 12px; z-index: 10;
+  }
+  .spinner {
+    width: 26px; height: 26px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-msg { font-size: 0.72rem; color: var(--red); margin-top: 3px; }
+  .update-time { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: 1fr; }
+    header, main { padding-left: 14px; padding-right: 14px; }
+    .info-bar { padding: 5px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>資産 <span>ダッシュボード</span></h1>
+  <div class="controls">
+    <div class="toggle-group" id="currencyToggle">
+      <button class="active" data-val="JPY">JPY ¥</button>
+      <button data-val="USD">USD $</button>
+    </div>
+    <div class="period-bar" id="periodBar">
+      <button data-val="1d">1日</button>
+      <button data-val="1w">1週</button>
+      <button class="active" data-val="1m">1ヶ月</button>
+      <button data-val="3m">3ヶ月</button>
+      <button data-val="6m">6ヶ月</button>
+      <button data-val="1y">1年</button>
+      <button data-val="5y">5年</button>
+      <button data-val="custom">カスタム</button>
+    </div>
+    <div class="custom-range" id="customRange">
+      <input type="date" id="startDate">
+      <span style="color:var(--muted)">〜</span>
+      <input type="date" id="endDate">
+      <button id="applyCustom">適用</button>
+    </div>
+  </div>
+</header>
+
+<div class="info-bar">
+  <span>USD/JPY: <span class="rate" id="usdjpyDisplay">―</span>&nbsp; 5分毎自動更新</span>
+  <span>※ eMaxisSlim: 同一指数ETFで代替。TOPIX: 1306.T ETF。BTC: Binance BTCUSDT</span>
+</div>
+
+<main>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+// ─── Config ───────────────────────────────────────────────────────────────────
+const ASSETS = [
+  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'yahoo', symbol: 'GC=F',   base: 'USD' },
+  { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'yahoo', symbol: 'ACWI',   base: 'USD' },
+  { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'yahoo', symbol: '%5EGSPC', base: 'USD' },
+  { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance',               base: 'USD' },
+  { id: 'topix',       name: 'TOPIX (1306.T ETF)',                  color: '#10b981', src: 'yahoo', symbol: '1306.T', base: 'JPY' },
+];
+
+// Yahoo Finance period → [range, interval]
+const YF_PERIODS = {
+  '1d': ['1d',  '5m'],
+  '1w': ['5d',  '60m'],
+  '1m': ['1mo', '1d'],
+  '3m': ['3mo', '1d'],
+  '6m': ['6mo', '1wk'],
+  '1y': ['1y',  '1wk'],
+  '5y': ['5y',  '1mo'],
+};
+
+// Binance interval & limit
+const BN_PERIODS = {
+  '1d': ['1h',  24],
+  '1w': ['4h',  42],
+  '1m': ['1d',  31],
+  '3m': ['1d',  92],
+  '6m': ['1d',  183],
+  '1y': ['1w',  53],
+  '5y': ['1w',  261],
+};
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let currency = 'JPY';
+let period = '1m';
+let customStart = '';
+let customEnd = '';
+let usdjpy = 150;
+const charts = {};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const round = (v, d) => Math.round(v * 10**d) / 10**d;
+
+function formatPrice(val, cur) {
+  if (val == null || isNaN(val)) return '―';
+  if (cur === 'JPY') return val.toLocaleString('ja-JP', { maximumFractionDigits: 0 });
+  return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: val > 100 ? 2 : 4 });
+}
+
+function formatChange(val) {
+  if (val == null || isNaN(val)) return { text: '―', cls: 'neu' };
+  const sign = val >= 0 ? '+' : '';
+  return { text: `${sign}${val.toFixed(2)}%`, cls: val > 0 ? 'pos' : val < 0 ? 'neg' : 'neu' };
+}
+
+function calcChanges(timestamps, prices) {
+  if (!prices || prices.length < 2) return [null, null, null];
+  const now = timestamps[timestamps.length - 1];
+  const cur = prices[prices.length - 1];
+  const DAY  = 86400_000;
+  const WEEK = 7 * DAY;
+  const MON  = 30 * DAY;
+
+  function findRef(msAgo) {
+    const target = now - msAgo;
+    let best = null, bestDiff = Infinity;
+    for (let i = 0; i < timestamps.length - 1; i++) {
+      const d = Math.abs(timestamps[i] - target);
+      if (d < bestDiff) { bestDiff = d; best = prices[i]; }
+    }
+    return best;
+  }
+
+  function pct(ref) {
+    return (ref != null && ref !== 0) ? round((cur - ref) / ref * 100, 2) : null;
+  }
+
+  return [pct(findRef(DAY)), pct(findRef(WEEK)), pct(findRef(MON))];
+}
+
+// ─── Data fetchers ────────────────────────────────────────────────────────────
+async function fetchUSDJPY() {
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/USDJPY%3DX?range=2d&interval=1d';
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    const closes = d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
+    const v = closes.filter(Boolean).at(-1);
+    if (v) { usdjpy = v; document.getElementById('usdjpyDisplay').textContent = v.toFixed(2); }
+  } catch {}
+}
+
+async function fetchYahoo(symbol, per, start, end) {
+  let url;
+  if (per === 'custom' && start && end) {
+    const p1 = Math.floor(new Date(start).getTime() / 1000);
+    const p2 = Math.floor(new Date(end).getTime() / 1000) + 86400;
+    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${p1}&period2=${p2}&interval=1d`;
+  } else {
+    const [range, interval] = YF_PERIODS[per] || ['1mo', '1d'];
+    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`;
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Yahoo ${r.status}`);
+  const d = await r.json();
+  const result = d?.chart?.result?.[0];
+  if (!result) throw new Error('データなし');
+  const ts = result.timestamp.map(t => t * 1000);
+  const closes = result.indicators?.quote?.[0]?.close || [];
+  return [ts, closes.map(v => v != null ? round(v, 4) : null)];
+}
+
+async function fetchBinance(per, cur, start, end) {
+  let params;
+  const sym = 'BTCUSDT';
+  if (per === 'custom' && start && end) {
+    const st = new Date(start).getTime();
+    const et = new Date(end).getTime() + 86400_000;
+    params = `symbol=${sym}&interval=1d&startTime=${st}&endTime=${et}&limit=1000`;
+  } else {
+    const [interval, limit] = BN_PERIODS[per] || ['1d', 31];
+    params = `symbol=${sym}&interval=${interval}&limit=${limit}`;
+  }
+  const r = await fetch(`https://api.binance.com/api/v3/klines?${params}`);
+  if (!r.ok) throw new Error(`Binance ${r.status}`);
+  const data = await r.json();
+  const ts     = data.map(k => k[0]);
+  const prices = data.map(k => parseFloat(k[4])); // close price in USDT
+  return [ts, prices];
+}
+
+async function loadAsset(asset) {
+  const loadEl = document.getElementById(`loading-${asset.id}`);
+  const errEl  = document.getElementById(`err-${asset.id}`);
+  loadEl.style.display = 'flex';
+  errEl.textContent = '';
+
+  try {
+    let ts, prices;
+
+    if (asset.src === 'yahoo') {
+      [ts, prices] = await fetchYahoo(asset.symbol, period, customStart, customEnd);
+    } else {
+      [ts, prices] = await fetchBinance(period, currency, customStart, customEnd);
+    }
+
+    // Filter out null prices
+    const paired = ts.map((t, i) => [t, prices[i]]).filter(([, p]) => p != null);
+    ts     = paired.map(p => p[0]);
+    prices = paired.map(p => p[1]);
+
+    // Currency conversion
+    if (asset.src !== 'binance' || currency !== 'JPY') {
+      // For Binance (USDT≒USD): handled below
+    }
+    let displayPrices = prices;
+    if (asset.base === 'USD' && currency === 'JPY') {
+      displayPrices = prices.map(p => round(p * usdjpy, 2));
+    } else if (asset.base === 'JPY' && currency === 'USD') {
+      displayPrices = prices.map(p => round(p / usdjpy, 4));
+    }
+
+    // Update UI
+    const cur = displayPrices.at(-1);
+    const unit = currency === 'JPY' ? '円' : 'USD';
+    document.getElementById(`price-${asset.id}`).innerHTML =
+      `${formatPrice(cur, currency)}<span class="unit">${unit}</span>`;
+
+    const [dc, wc, mc] = calcChanges(ts, displayPrices);
+    for (const [sfx, val] of [['day', dc], ['week', wc], ['month', mc]]) {
+      const el = document.getElementById(`${sfx}-${asset.id}`);
+      const { text, cls } = formatChange(val);
+      el.textContent = text;
+      el.className = `change-val ${cls}`;
+    }
+
+    document.getElementById(`time-${asset.id}`).textContent =
+      '更新: ' + new Date().toLocaleTimeString('ja-JP');
+
+    // Update chart
+    const chart = charts[asset.id];
+    chart.data.datasets[0].data = ts.map((t, i) => ({ x: t, y: displayPrices[i] }));
+    chart.update('active');
+
+  } catch (e) {
+    errEl.textContent = 'エラー: ' + e.message;
+    console.error(asset.id, e);
+  } finally {
+    loadEl.style.display = 'none';
+  }
+}
+
+// ─── Chart init ───────────────────────────────────────────────────────────────
+function makeChart(asset) {
+  const ctx = document.getElementById(`chart-${asset.id}`).getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 220);
+  g.addColorStop(0, asset.color + '44');
+  g.addColorStop(1, asset.color + '00');
+
+  charts[asset.id] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        data: [], borderColor: asset.color, backgroundColor: g,
+        borderWidth: 2, pointRadius: 0, fill: true, tension: 0.2,
+        spanGaps: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 300 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a1d27', borderColor: '#2a2d3e', borderWidth: 1,
+          titleColor: '#8892a4', bodyColor: '#e2e8f0',
+          callbacks: {
+            title: items => {
+              const d = new Date(items[0].parsed.x);
+              return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+            },
+            label: ctx => {
+              const v = ctx.parsed.y;
+              return currency === 'JPY'
+                ? `¥${v.toLocaleString('ja-JP', { maximumFractionDigits: 0 })}`
+                : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: v > 100 ? 2 : 4 })}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            displayFormats: {
+              minute: 'H:mm',
+              hour:   'M/d H時',
+              day:    'M/d',
+              week:   'M/d',
+              month:  'yyyy/M',
+              year:   'yyyy年',
+            },
+            tooltipFormat: 'yyyy/MM/dd HH:mm',
+          },
+          grid: { color: '#1e2133' },
+          ticks: { color: '#8892a4', maxTicksLimit: 8, font: { size: 10 }, maxRotation: 0 },
+        },
+        y: {
+          position: 'right',
+          grid: { color: '#1e2133' },
+          ticks: {
+            color: '#8892a4',
+            font: { size: 10 },
+            maxTicksLimit: 10,       // ← more ticks
+            precision: 0,
+            callback: v => {
+              if (currency === 'JPY') {
+                if (v >= 1_000_000) return `¥${(v/1_000_000).toFixed(2)}M`;
+                if (v >= 10_000)   return `¥${Math.round(v/1000)}k`;
+                return `¥${v.toLocaleString('ja-JP')}`;
+              }
+              if (v >= 10_000) return `$${Math.round(v/1000)}k`;
+              return `$${v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ─── DOM ──────────────────────────────────────────────────────────────────────
+function createCard(asset) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.id = `card-${asset.id}`;
+  d.innerHTML = `
+    <div class="loading-overlay" id="loading-${asset.id}"><div class="spinner"></div></div>
+    <div class="card-header">
+      <div>
+        <div class="card-title">${asset.name}</div>
+        <div class="card-price" id="price-${asset.id}">―</div>
+        <div class="error-msg" id="err-${asset.id}"></div>
+      </div>
+      <div class="update-time" id="time-${asset.id}"></div>
+    </div>
+    <div class="changes">
+      <div class="change-item"><div class="change-label">前日比</div>  <div class="change-val neu" id="day-${asset.id}">―</div></div>
+      <div class="change-item"><div class="change-label">前週比</div>  <div class="change-val neu" id="week-${asset.id}">―</div></div>
+      <div class="change-item"><div class="change-label">前月比</div>  <div class="change-val neu" id="month-${asset.id}">―</div></div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-${asset.id}"></canvas></div>
+  `;
+  return d;
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+const grid = document.getElementById('grid');
+ASSETS.forEach(a => { grid.appendChild(createCard(a)); makeChart(a); });
+
+async function fetchAll() {
+  await fetchUSDJPY();
+  ASSETS.forEach(a => loadAsset(a));
+}
+
+// Currency toggle
+document.getElementById('currencyToggle').addEventListener('click', e => {
+  if (!e.target.dataset.val) return;
+  currency = e.target.dataset.val;
+  document.querySelectorAll('#currencyToggle button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  fetchAll();
+});
+
+// Period buttons
+document.getElementById('periodBar').addEventListener('click', e => {
+  if (!e.target.dataset.val) return;
+  period = e.target.dataset.val;
+  document.querySelectorAll('#periodBar button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  const cr = document.getElementById('customRange');
+  if (period === 'custom') {
+    cr.classList.add('visible');
+    const today = new Date();
+    const monthAgo = new Date(today); monthAgo.setMonth(monthAgo.getMonth() - 1);
+    document.getElementById('startDate').value = monthAgo.toISOString().slice(0, 10);
+    document.getElementById('endDate').value   = today.toISOString().slice(0, 10);
+  } else {
+    cr.classList.remove('visible');
+    fetchAll();
+  }
+});
+
+document.getElementById('applyCustom').addEventListener('click', () => {
+  customStart = document.getElementById('startDate').value;
+  customEnd   = document.getElementById('endDate').value;
+  if (customStart && customEnd) fetchAll();
+});
+
+// Auto refresh every 5 min
+setInterval(fetchAll, 5 * 60 * 1000);
+fetchAll();
+</script>
+</body>
+</html>
