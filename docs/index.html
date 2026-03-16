@@ -128,7 +128,7 @@
 
 <div class="info-bar">
   <span>USD/JPY: <span class="rate" id="usdjpyDisplay">―</span>&nbsp; 5分毎自動更新</span>
-  <span>※ 金・ACWI・S&P500・TOPIX: Yahoo Finance / BTC: Binance / 為替: open.er-api.com</span>
+  <span>※ 金・BTC: Binance / ACWI・S&P500・TOPIX: Stooq / 為替: open.er-api.com</span>
 </div>
 
 <main>
@@ -137,24 +137,18 @@
 
 <script>
 // ─── Config ───────────────────────────────────────────────────────────────────
-const ASSETS = [
-  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'yahoo',   symbol: 'GC=F',    base: 'USD' },
-  { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'yahoo',   symbol: 'ACWI',    base: 'USD' },
-  { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'yahoo',   symbol: '%5EGSPC', base: 'USD' },
-  { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance', symbol: 'BTCUSDT', base: 'USD' },
-  { id: 'topix',       name: 'TOPIX (1306.T ETF)',                  color: '#10b981', src: 'yahoo',   symbol: '1306.T',  base: 'JPY' },
-];
+// Yahoo Finance が 403 を返すようになったため:
+//   金・BTC → Binance API (CORS フリー)
+//   ACWI・S&P500・TOPIX → Stooq (allorigins.win 経由でCORSを回避)
+const ALLORIGINS = 'https://api.allorigins.win/raw?url=';
 
-// Yahoo Finance period → [range, interval]
-const YF_PERIODS = {
-  '1d': ['1d',  '5m'],
-  '1w': ['5d',  '60m'],
-  '1m': ['1mo', '1d'],
-  '3m': ['3mo', '1d'],
-  '6m': ['6mo', '1wk'],
-  '1y': ['1y',  '1wk'],
-  '5y': ['5y',  '1mo'],
-};
+const ASSETS = [
+  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'binance', symbol: 'XAUUSDT', base: 'USD' },
+  { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'stooq',   symbol: 'acwi.us', base: 'USD' },
+  { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'stooq',   symbol: '^spx',    base: 'USD' },
+  { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance', symbol: 'BTCUSDT', base: 'USD' },
+  { id: 'topix',       name: 'TOPIX (1306.T ETF)',                  color: '#10b981', src: 'stooq',   symbol: '1306.jp', base: 'JPY' },
+];
 
 // Binance interval & limit
 const BN_PERIODS = {
@@ -225,24 +219,40 @@ async function fetchUSDJPY() {
   } catch {}
 }
 
-async function fetchYahoo(symbol, per, start, end) {
-  let url;
+async function fetchStooq(symbol, per, start, end) {
+  // Stooq は日次データを CSV で提供。allorigins.win 経由でブラウザから取得する。
+  const DAYS = { '1d': 5, '1w': 14, '1m': 32, '3m': 93, '6m': 184, '1y': 367, '5y': 1827 };
+  let d1, d2;
   if (per === 'custom' && start && end) {
-    const p1 = Math.floor(new Date(start).getTime() / 1000);
-    const p2 = Math.floor(new Date(end).getTime() / 1000) + 86400;
-    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${p1}&period2=${p2}&interval=1d`;
+    d1 = start.replace(/-/g, '');
+    d2 = end.replace(/-/g, '');
   } else {
-    const [range, interval] = YF_PERIODS[per] || ['1mo', '1d'];
-    url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=${interval}`;
+    const days = DAYS[per] || 32;
+    const endDate = new Date();
+    const startDate = new Date(endDate.getTime() - days * 86400000);
+    d1 = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    d2 = endDate.toISOString().slice(0, 10).replace(/-/g, '');
   }
-  const r = await fetch(url);
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&d1=${d1}&d2=${d2}&i=d`;
+  const r = await fetch(ALLORIGINS + encodeURIComponent(stooqUrl));
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const d = await r.json();
-  const result = d?.chart?.result?.[0];
-  if (!result) throw new Error('データなし');
-  const ts = result.timestamp.map(t => t * 1000);
-  const closes = result.indicators?.quote?.[0]?.close || [];
-  return [ts, closes.map(v => v != null ? round(v, 4) : null)];
+  const csv = await r.text();
+  if (!csv || !csv.includes(',') || csv.startsWith('No data')) throw new Error('データなし');
+
+  const lines = csv.trim().split('\n');
+  const ts = [], prices = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    if (parts.length < 5) continue;
+    const date = parts[0].trim();
+    const close = parts[4].trim();
+    if (!date || !close || close === 'null') continue;
+    const t = new Date(date).getTime();
+    const p = parseFloat(close);
+    if (!isNaN(t) && !isNaN(p)) { ts.push(t); prices.push(p); }
+  }
+  if (ts.length === 0) throw new Error('データなし');
+  return [ts, prices];
 }
 
 async function fetchBinance(symbol, per, start, end) {
@@ -272,8 +282,8 @@ async function loadAsset(asset) {
   try {
     let ts, prices;
 
-    if (asset.src === 'yahoo') {
-      [ts, prices] = await fetchYahoo(asset.symbol, period, customStart, customEnd);
+    if (asset.src === 'stooq') {
+      [ts, prices] = await fetchStooq(asset.symbol, period, customStart, customEnd);
     } else {
       [ts, prices] = await fetchBinance(asset.symbol, period, customStart, customEnd);
     }
