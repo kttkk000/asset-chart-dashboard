@@ -128,7 +128,7 @@
 
 <div class="info-bar">
   <span>USD/JPY: <span class="rate" id="usdjpyDisplay">―</span>&nbsp; 5分毎自動更新</span>
-  <span>※ 金・BTC: Binance / ACWI・S&P500・TOPIX: Stooq / 為替: open.er-api.com</span>
+  <span>※ BTC: Binance / 金・ACWI・S&P500・TOPIX: Stooq / 為替: open.er-api.com</span>
 </div>
 
 <main>
@@ -137,13 +137,16 @@
 
 <script>
 // ─── Config ───────────────────────────────────────────────────────────────────
-// Yahoo Finance が 403 を返すようになったため:
-//   金・BTC → Binance API (CORS フリー)
-//   ACWI・S&P500・TOPIX → Stooq (allorigins.win 経由でCORSを回避)
-const ALLORIGINS = 'https://api.allorigins.win/raw?url=';
+// Binance に XAUUSDT スポットペアなし → 金も Stooq に統一
+// allorigins.win が不安定なため複数プロキシでフォールバック
+const STOOQ_PROXIES = [
+  url => 'https://corsproxy.io/?' + encodeURIComponent(url),
+  url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
+];
 
 const ASSETS = [
-  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'binance', symbol: 'XAUUSDT', base: 'USD' },
+  { id: 'gold',        name: '金 (Gold)',                          color: '#f59e0b', src: 'stooq',   symbol: 'xauusd',  base: 'USD' },
   { id: 'all_country', name: 'eMaxisSlim オールカントリー (ACWI)',  color: '#6366f1', src: 'stooq',   symbol: 'acwi.us', base: 'USD' },
   { id: 'sp500',       name: 'eMaxisSlim S&P500 (S&P500指数)',     color: '#3b82f6', src: 'stooq',   symbol: '^spx',    base: 'USD' },
   { id: 'bitcoin',     name: 'ビットコイン (BTC)',                   color: '#f97316', src: 'binance', symbol: 'BTCUSDT', base: 'USD' },
@@ -219,8 +222,26 @@ async function fetchUSDJPY() {
   } catch {}
 }
 
+async function fetchStooqCsv(stooqUrl) {
+  // 複数プロキシを順番に試し、最初に成功したものを返す
+  let lastErr = new Error('Failed to fetch');
+  for (const makeProxy of STOOQ_PROXIES) {
+    try {
+      const proxyUrl = makeProxy(stooqUrl);
+      const r = await fetch(proxyUrl, { signal: AbortSignal.timeout(9000) });
+      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      const text = await r.text();
+      if (text && text.includes(',') && !text.startsWith('No data')) return text;
+      lastErr = new Error('データなし');
+    } catch (e) {
+      lastErr = e.name === 'TimeoutError' ? new Error('タイムアウト') : e;
+    }
+  }
+  throw lastErr;
+}
+
 async function fetchStooq(symbol, per, start, end) {
-  // Stooq は日次データを CSV で提供。allorigins.win 経由でブラウザから取得する。
+  // Stooq は日次データを CSV で提供。CORS プロキシ経由でブラウザから取得する。
   const DAYS = { '1d': 5, '1w': 14, '1m': 32, '3m': 93, '6m': 184, '1y': 367, '5y': 1827 };
   let d1, d2;
   if (per === 'custom' && start && end) {
@@ -234,10 +255,8 @@ async function fetchStooq(symbol, per, start, end) {
     d2 = endDate.toISOString().slice(0, 10).replace(/-/g, '');
   }
   const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&d1=${d1}&d2=${d2}&i=d`;
-  const r = await fetch(ALLORIGINS + encodeURIComponent(stooqUrl));
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const csv = await r.text();
-  if (!csv || !csv.includes(',') || csv.startsWith('No data')) throw new Error('データなし');
+  const csv = await fetchStooqCsv(stooqUrl);
+  if (!csv) throw new Error('データなし');
 
   const lines = csv.trim().split('\n');
   const ts = [], prices = [];
